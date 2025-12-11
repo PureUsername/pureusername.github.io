@@ -32,7 +32,7 @@
     .label{font-weight:700; font-size:14px}
     .hint{color:var(--muted); font-size:12px}
     .row{display:flex; gap:10px; align-items:center}
-    input[type="number"], input[type="text"], input[type="date"], textarea{
+    input[type="number"], input[type="text"], input[type="date"], textarea, select{
       width:100%; padding:12px 14px; border-radius:12px; border:1px solid #f6c8da; background:#ffffff; color:#2d2a32;
       outline:none; font-size:16px; transition:.15s border,.15s box-shadow;
     }
@@ -231,11 +231,22 @@
             <span class="value" id="otUnitPricePreview">0.00</span>
           </div>
         </div>
-        <div class="hint">
+          <div class="hint">
           OT CHARGE:
           <span class="value">
-            (rental / 26 / 8) × <span id="otMultiplierHint">1.5</span>
+            <span id="otFormulaText">(rental / 26 / 8) × 1.5</span>
           </span>
+        </div>
+
+        <div class="field" style="margin-top:12px">
+          <div class="label">Bill OT By</div>
+          <div class="row">
+            <select id="billingMode">
+              <option value="hours" selected>Hours</option>
+              <option value="minutes">Minutes</option>
+            </select>
+            <span class="hint">Determines the OT CHARGE unit and UOM in the export</span>
+          </div>
         </div>
 
         <div class="sep"></div>
@@ -261,7 +272,7 @@
             </thead>
             <tbody id="rowsBody"></tbody>
           </table>
-          <div class="hint">Each row creates a <span class="value">RENTAL OF LOWBED</span> line (1 MONTH at rental). If <span class="value">OT Hours &gt; 0</span>, it adds an <span class="value">OT CHARGE</span> line using the unit price above. <span class="value">OT Hours</span> can be 0.</div>
+          <div class="hint">Each row creates a <span class="value">RENTAL OF LOWBED</span> line (1 MONTH at rental). If <span class="value">OT Hours &gt; 0</span>, it adds an <span class="value">OT CHARGE</span> line using the unit price above. <span class="value">OT Hours</span> can be 0. When billing by minutes, enter OT as <span class="value">HH.MM</span> (e.g., 25.33 → 1533 minutes).</div>
         </div>
 
         <div class="sep"></div>
@@ -561,6 +572,11 @@
     const rowsBody = $("rowsBody");
 
     // UPDATED: use configurable OT multiplier
+    function getBillingMode() {
+      const mode = $("billingMode")?.value;
+      return mode === "minutes" ? "minutes" : "hours";
+    }
+
     function computeOtUnitPrice() {
       const rental = parseFloat($("rental").value) || 0;
       let multiplier = parseFloat($("otMultiplier")?.value);
@@ -569,13 +585,15 @@
         multiplier = 1.5; // fallback default
       }
 
-      const unit = rental / 26 / 8 * multiplier;
+      const hourlyUnit = rental / 26 / 8 * multiplier;
+      const mode = getBillingMode();
+      const unit = mode === "minutes" ? hourlyUnit / 60 : hourlyUnit;
       $("otUnitPricePreview").textContent = fmt2(unit);
 
-      // Update the formula hint display if it exists
-      const hintSpan = $("otMultiplierHint");
-      if (hintSpan) {
-        hintSpan.textContent = fmt2(multiplier);
+      const formulaText = $("otFormulaText");
+      if (formulaText) {
+        const base = `(rental / 26 / 8) × ${fmt2(multiplier)}`;
+        formulaText.textContent = mode === "minutes" ? `${base} / 60` : base;
       }
 
       return unit;
@@ -591,7 +609,7 @@
 
       const tdHours = document.createElement("td");
       const inpHours = document.createElement("input");
-      inpHours.type="number"; inpHours.step="1"; inpHours.min="0"; inpHours.classList.add("num","mini");
+      inpHours.type="number"; inpHours.step="0.01"; inpHours.min="0"; inpHours.classList.add("num","mini");
       inpHours.placeholder="0"; inpHours.value = defaults.hours;
       tdHours.appendChild(inpHours);
 
@@ -629,6 +647,17 @@
       return rows;
     }
 
+    // Convert an "hours.minutes" entry into minutes (e.g., 25.33 => 1533 minutes)
+    function toMinutesFromHourLike(value) {
+      if (value === null || value === undefined || value === "") return 0;
+      const str = String(value);
+      const [hStr, mStr='0'] = str.split('.');
+      const hours = clampNonNeg(parseInt(hStr, 10));
+      const minutesRaw = clampNonNeg(parseInt(mStr.slice(0, 2), 10));
+      const minutes = Math.min(59, minutesRaw);
+      return hours * 60 + minutes;
+    }
+
     function buildDataLines() {
       const fixedCode = "RLB6";
       const rentalItem = "RENTAL OF LOWBED";
@@ -638,7 +667,12 @@
       const dateDMY = fmtDateDMY(dateIso);
       const location = ($("location").value || "").trim();
       const rental = parseFloat($("rental").value) || 0;
+      const billingMode = getBillingMode();
       const otUnit = computeOtUnitPrice();
+
+      let multiplier = parseFloat($("otMultiplier")?.value);
+      if (!Number.isFinite(multiplier) || multiplier <= 0) multiplier = 1.5;
+      const hourlyOtUnit = rental / 26 / 8 * multiplier;
 
       const rows = getRowsData();
       const lines = [];
@@ -656,6 +690,9 @@
           unitPrice: fmt2(rental)
         });
         if (r.hours > 0) {
+          const qty = billingMode === "minutes" ? toMinutesFromHourLike(r.hours) : r.hours;
+          const uom = billingMode === "minutes" ? "MINUTES" : "HOURS";
+          const unitPrice = billingMode === "minutes" ? fmt2(hourlyOtUnit / 60) : fmt2(otUnit);
           lines.push({
             code: fixedCode,
             item: otItem,
@@ -663,9 +700,9 @@
             doNo: r.doNo,
             plate: r.plate,
             location,
-            qty: r.hours,
-            uom: "HOURS",
-            unitPrice: fmt2(otUnit)
+            qty,
+            uom,
+            unitPrice
           });
         }
       });
@@ -784,7 +821,7 @@
     $("exportPdfBtn").addEventListener('click', exportToPDF);
 
     // ---------- Wire up: Invoice Builder ----------
-    ["rental", "otMultiplier"].forEach(id => {
+    ["rental", "otMultiplier", "billingMode"].forEach(id => {
       $(id).addEventListener("input", () => { computeOtUnitPrice(); });
       $(id).addEventListener("change", () => { computeOtUnitPrice(); });
     });
